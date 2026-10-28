@@ -552,7 +552,12 @@ function applyFields(f){
   const set = (n, v) => { if (v === undefined || v === null || v === '') return; nfEl(n).value = v; };
   const prods = S.data.productos;
   if (f.producto) { const fp = prods.find(x => norm(x.nombre) === norm(f.producto)) || prods.find(x => norm(f.producto).includes(norm(x.nombre)) || norm(x.nombre).includes(norm(f.producto))); if (fp) f.producto = fp.nombre; else f.producto = ''; }
-  if (f.depto) { const d = S.data.departamentos.find(x => norm(x) === norm(f.depto) || norm(x).startsWith(norm(f.depto)) || norm(f.depto).startsWith(norm(x).replace(' d.c.', ''))); f.depto = d || ''; }
+  if (f.ciudad) f.ciudad = String(f.ciudad).replace(/\s*d\.?\s*c\.?$/i, '').trim();
+  const ci = f.ciudad ? cityInfo(f.ciudad) : null;
+  if (f.depto) { if (norm(f.depto).startsWith('bogota')) f.depto = 'Cundinamarca'; const d = S.data.departamentos.find(x => norm(x) === norm(f.depto)) || S.data.departamentos.find(x => norm(x).startsWith(norm(f.depto))); f.depto = d || ''; }
+  if (ci && ci.name) f.ciudad = ci.name;
+  if (!f.depto && ci) f.depto = ci.depto;
+  if (!f.zona && ci && ci.zona) f.zona = ci.zona;
   ['cliente','email','dir','ciudad','depto','zona','producto','notas'].forEach(k => set(k, typeof f[k] === 'string' ? f[k].trim() : f[k]));
   if (f.email === '-' ) nfEl('email').value = '';
   if (f.tel) nfEl('tel').value = String(f.tel).replace(/\D/g, '').replace(/^57(?=3\d{9}$)/, '');
@@ -570,28 +575,86 @@ function applyFields(f){
 }
 /* Lector básico (sin IA): Tesseract en el navegador + reglas de texto */
 function loadScript(src){ return new Promise((res, rej) => { const s = document.createElement('script'); s.src = src; s.onload = res; s.onerror = () => rej(new Error('No pude cargar el lector OCR')); document.head.appendChild(s); }); }
+function prepOCR(url){   // agranda, pasa a grises y, si la captura es de fondo oscuro (modo oscuro), invierte los colores
+  return new Promise(res => {
+    const im = new Image();
+    im.onload = () => {
+      const k = Math.min(3, Math.max(1, 1500 / im.width)), c = document.createElement('canvas'); c.width = Math.round(im.width * k); c.height = Math.round(im.height * k);
+      const g = c.getContext('2d'); g.drawImage(im, 0, 0, c.width, c.height);
+      const d = g.getImageData(0, 0, c.width, c.height), px = d.data; let sum = 0, mn = 255, mx = 0;
+      for (let i = 0; i < px.length; i += 4) { const y = .299 * px[i] + .587 * px[i + 1] + .114 * px[i + 2]; px[i] = y; sum += y; if (y < mn) mn = y; if (y > mx) mx = y; }
+      const dark = sum / (px.length / 4) < 120, span = Math.max(1, mx - mn);
+      for (let i = 0; i < px.length; i += 4) { let y = (px[i] - mn) * 255 / span; if (dark) y = 255 - y; px[i] = px[i + 1] = px[i + 2] = y; }
+      g.putImageData(d, 0, 0); res(c.toDataURL('image/png'));
+    };
+    im.onerror = () => res(url); im.src = url;
+  });
+}
 async function ocrFallback(){
   if (!window.Tesseract) await loadScript('https://cdn.jsdelivr.net/npm/tesseract.js@5.1.1/dist/tesseract.min.js');
   const w = await Tesseract.createWorker('spa'); let text = '';
-  for (const m of S.imgs) { const r = await w.recognize(m.url); text += '\n' + r.data.text; }
+  for (const m of S.imgs) { const r = await w.recognize(await prepOCR(m.url)); text += '\n' + r.data.text; }
   await w.terminate();
   return parseText(text);
 }
+/* Ciudad -> departamento y zona: lo que ya está en tus pedidos + ciudades principales */
+const CITY_BASE = { 'bogota':'Cundinamarca','medellin':'Antioquia','cali':'Valle del Cauca','barranquilla':'Atlántico','cartagena':'Bolívar','bucaramanga':'Santander','cucuta':'Norte de Santander',
+  'pereira':'Risaralda','manizales':'Caldas','santa marta':'Magdalena','ibague':'Tolima','villavicencio':'Meta','pasto':'Nariño','monteria':'Córdoba','neiva':'Huila','armenia':'Quindío',
+  'popayan':'Cauca','valledupar':'Cesar','sincelejo':'Sucre','riohacha':'La Guajira','tunja':'Boyacá','quibdo':'Chocó','soacha':'Cundinamarca','facatativa':'Cundinamarca','chia':'Cundinamarca',
+  'zipaquira':'Cundinamarca','fusagasuga':'Cundinamarca','girardot':'Cundinamarca','soledad':'Atlántico','bello':'Antioquia','itagui':'Antioquia','envigado':'Antioquia','palmira':'Valle del Cauca',
+  'buenaventura':'Valle del Cauca','tulua':'Valle del Cauca','floridablanca':'Santander','giron':'Santander','dosquebradas':'Risaralda','yopal':'Casanare','florencia':'Caquetá','leticia':'Amazonas' };
+const CITY_NAME = { bogota:'Bogotá', medellin:'Medellín', popayan:'Popayán', monteria:'Montería', ibague:'Ibagué', cucuta:'Cúcuta', quibdo:'Quibdó', facatativa:'Facatativá', chia:'Chía', zipaquira:'Zipaquirá', fusagasuga:'Fusagasugá', tulua:'Tuluá', giron:'Girón', florencia:'Florencia' };
+function cityInfo(city){
+  const k = norm(city).replace(/\s*d\.?\s*c\.?$/, '');
+  if (!k) return null;
+  const h = P_().filter(p => norm(p.ciudad) === k && p.depto);
+  if (h.length) { const c = {}; h.forEach(p => c[p.depto] = (c[p.depto] || 0) + 1); const d = Object.keys(c).sort((a, b) => c[b] - c[a])[0]; const z = (h.find(p => p.zona) || {}).zona; return { depto: d, zona: z || (CITY_BASE[k] ? 'Ciudad' : ''), name: String(h[0].ciudad).trim() }; }
+  if (CITY_BASE[k]) return { depto: CITY_BASE[k], zona: 'Ciudad', name: CITY_NAME[k] || String(city).trim().replace(/\b\w/g, c => c.toUpperCase()) };
+  return null;
+}
+const LABELS = [
+  ['cliente', /^(?:nombre\w*(?:\s+(?:completo|y\s+apellidos?|del\s+cliente))?|cliente)(?![a-z])/],
+  ['tel', /^(?:(?:numero|num)\s+(?:de\s+)?)?(?:telef\w*|celular|whats\w*|movil|contacto)(?:\s+(?:de\s+)?contacto)?/],
+  ['dir', /^direc\w*(?:\s+(?:de\s+)?(?:entrega|envio|completa))?/],
+  ['ciudad', /^(?:ciudad|municipio)(?:\s*(?:\/|y|de)?\s*(?:municipio|entrega))?/],
+  ['depto', /^(?:departamento|depto)/],
+  ['email', /^(?:correo|e-?mail)(?:\s+electronico)?/],
+  ['producto', /^(?:producto|articulo)(?:\s+a\s+comprar)?/],
+  ['cant', /^(?:cantidad|unidades)/],
+  ['venta', /^(?:valor|total|precio|monto)(?:\s+(?:a\s+)?(?:pagar|cobrar|recaudar|total))?/],
+  ['notas', /^(?:notas?|observaci\w+|(?:punto\s+de\s+)?referencia)/]
+];
+function labelOf(line){
+  const nl = line.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase().trimStart();
+  for (const [k, re] of LABELS) { const m = nl.match(re); if (m) { const rest = nl.slice(m[0].length); if (!rest || /^\s*[:\-–]/.test(rest) || (/^\s/.test(rest) && line.length - m[0].length < 40 && k !== 'cliente' && k !== 'venta' && k !== 'producto')) return { k, val: line.trimStart().slice(m[0].length).replace(/^\s*[:\-–]?\s*/, '').trim() }; if (/^\s*[:\-–]/.test(rest)) return { k, val: line.trimStart().slice(m[0].length).replace(/^\s*[:\-–]\s*/, '').trim() }; } }
+  return null;
+}
 function parseText(text){
-  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean), out = {}, notes = [];
-  const lab = (re) => { for (const l of lines) { const m = l.match(re); if (m && m[m.length - 1].trim()) return m[m.length - 1].trim(); } return ''; };
-  out.cliente = lab(/^(?:nombre(?:\s+completo)?|cliente)\s*[:\-]\s*(.+)$/i);
-  out.dir = lab(/^(?:direcci[oó]n(?:\s+completa)?|dir\.?)\s*[:\-]\s*(.+)$/i);
-  out.ciudad = lab(/^(?:ciudad|municipio)(?:\s*\/\s*municipio)?\s*[:\-]\s*(.+)$/i);
-  out.depto = lab(/^(?:departamento|depto\.?)\s*[:\-]\s*(.+)$/i);
-  out.producto = lab(/^(?:producto|art[ií]culo)\s*[:\-]\s*(.+)$/i);
-  const em = text.match(/[\w.+-]+@[\w-]+\.[\w.-]+/); out.email = em ? em[0] : '';
-  const tl = lab(/(?:tel[eé]fono|celular|whatsapp|n[uú]mero|contacto)\s*[:\-]?\s*([+\d][\d\s().-]{8,})/i);
-  const tm = (tl || text).replace(/[^\d]/g, ' ').match(/(?:^|\s)(?:57\s?)?(3\d{2}\s?\d{3}\s?\d{4})(?:\s|$)/) || (tl || text).replace(/\D/g, '').match(/(3\d{9})/);
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l && !/^[\W_]{1,3}$/.test(l)), out = {};
+  for (let i = 0; i < lines.length; i++) {
+    const lb = labelOf(lines[i]); if (!lb || out[lb.k]) continue;
+    let val = lb.val;
+    if (!val) {                                   // el valor viene en la(s) línea(s) de abajo
+      const max = (lb.k === 'dir' || lb.k === 'notas') ? 3 : 1, parts = [];
+      for (let j = i + 1; j < lines.length && parts.length < max && !labelOf(lines[j]); j++) parts.push(lines[j]);
+      val = parts.join(', ');
+    }
+    if (val) out[lb.k] = val;
+  }
+  const em = text.match(/[\w.+-]+@[\w-]+\.[\w.-]+/); out.email = em ? em[0] : (out.email && out.email !== '-' ? out.email : '');
+  const digits = (out.tel || '').replace(/\D/g, '');
+  const tm = digits.match(/(?:^|57)(3\d{9})$/) || text.replace(/[^\d\n]/g, ' ').match(/(?:^|\s)(?:57\s?)?(3\d{2}\s?\d{3}\s?\d{4})(?:\s|$)/) || text.replace(/\D/g, '').match(/(3\d{9})/);
   out.tel = tm ? tm[1].replace(/\s/g, '') : '';
-  const cn = lab(/(?:cantidad|unidades?)\s*[:\-]?\s*(\d+)/i); out.cant = cn || '';
-  const vm = text.match(/(?:valor|total|precio|recaudo|pagar)[^\d$\n]{0,20}\$?\s*([\d][\d.,]{3,})/i); out.venta = vm ? vm[1].replace(/[.,](?=\d{3}\b)/g, '') : '';
-  if (!out.depto) { const d = (S.data.departamentos || []).find(x => norm(text).includes(norm(x).replace(' d.c.', ''))); if (d) out.depto = d; }
+  if (out.cant) out.cant = (String(out.cant).match(/\d+/) || [''])[0];
+  if (out.venta) { const v = String(out.venta).match(/\d[\d.,]{3,}/); out.venta = v ? v[0].replace(/[.,](?=\d{3}\b)/g, '') : ''; }
+  else { const vm = text.match(/(?:valor|total|precio|recaudo|pagar)[^\d$\n]{0,20}\$?\s*(\d[\d.,]{3,})/i); out.venta = vm ? vm[1].replace(/[.,](?=\d{3}\b)/g, '') : ''; }
+  // ciudad dentro de la dirección ("…, San José, Bogotá"): solo si es una ciudad conocida
+  if (!out.ciudad && out.dir) {
+    const segs = out.dir.split(',').map(x => x.trim()).filter(Boolean);
+    if (segs.length > 1 && cityInfo(segs[segs.length - 1])) { out.ciudad = segs.pop(); out.dir = segs.join(', '); }
+  }
+  if (out.ciudad) out.ciudad = out.ciudad.replace(/\s*d\.?\s*c\.?$/i, '').trim();
+  if (!out.depto) { const d = (S.data.departamentos || []).find(x => !/bogot/i.test(x) && norm(text).includes(norm(x))); if (d) out.depto = d; }
   if (!out.producto) { const p = S.data.productos.find(x => norm(text).includes(norm(x.nombre))); if (p) out.producto = p.nombre; }
   const cm = S.data.campanas.find(c => text.toUpperCase().includes(c.id)); if (cm) out.campana = cm.id;
   return out;
