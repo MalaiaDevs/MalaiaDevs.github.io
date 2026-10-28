@@ -223,14 +223,37 @@ const findCam = id => S.data && S.data.campanas.find(c => c.id === id);
 const prodLabel = p => String(p || '').trim();
 
 /* ---------- API ---------- */
+function diagnose(txt, status){
+  const t = String(txt || '');
+  if (/accounts\.google\.com|ServiceLogin|Iniciar sesi[oó]n|Sign in/i.test(t)) return 'Google está pidiendo iniciar sesión. En Apps Script: Implementar › Administrar implementaciones › ✏ Editar, deja “Ejecutar como: Yo” y “Quién tiene acceso: Cualquier persona” (no “con cuenta de Google”), y guarda como Nueva versión.';
+  if (/doPost/i.test(t)) return 'Tu Apps Script no tiene la función doPost. Pega el Code.gs completo, guarda y crea una Nueva versión de la implementación.';
+  if (/Se necesita autorizaci|Authorization required|authorize/i.test(t)) return 'Falta autorizar el script. En el editor de Apps Script ejecuta (▶) cualquier función, acepta los permisos y vuelve a implementar.';
+  if (/No se pudo abrir|unable to open|Page Not Found|404|no se encontr/i.test(t)) return 'La URL no es de una implementación activa. Copia otra vez la “URL de la aplicación web” (termina en /exec).';
+  const plain = t.replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 110);
+  return `La hoja no respondió como se esperaba (HTTP ${status}). Revisa que la URL termine en /exec y que el acceso sea “Cualquier persona”.${plain ? ' Respuesta: “' + plain + '”' : ''}`;
+}
+function cleanUrl(u){
+  const m = String(u || '').replace(/\s+/g, '').match(/https:\/\/script\.google\.com\/(?:a\/macros\/[^\/]+\/)?macros\/s\/[\w-]+\/exec/);
+  return m ? m[0] : '';
+}
+async function testConn(url, el){
+  el.style.color = ''; el.textContent = 'Probando…';
+  try {
+    const r = await fetch(url), t = await r.text(); let j; try { j = JSON.parse(t); } catch (e) { throw new Error(diagnose(t, r.status)); }
+    if (j && j.ok && j.version >= 3) { el.style.color = 'var(--accent)'; el.textContent = 'Conexión correcta.'; }
+    else if (j && j.ok) { el.style.color = 'var(--danger)'; el.textContent = 'La URL responde, pero con una versión vieja del código. En Apps Script: Implementar › Administrar implementaciones › ✏ › Versión: Nueva versión › Implementar.'; }
+    else throw new Error('Respuesta inesperada.');
+  } catch (e) { el.style.color = 'var(--danger)'; el.textContent = /Failed to fetch|NetworkError|Load failed/i.test(e.message) ? 'No se pudo conectar. Revisa internet y que la URL esté completa.' : e.message; }
+}
 async function api(action, payload = {}) {
   if (S.demo) return Demo.call(action, payload);
   if (!S.cfg.url) throw new Error('Falta la URL de la hoja');
-  let r;
+  let r, txt;
   try {
     r = await fetch(S.cfg.url, { method: 'POST', headers: {'Content-Type': 'text/plain;charset=utf-8'}, body: JSON.stringify({ token: S.cfg.token || undefined, action, ...payload }) });
-  } catch (e) { throw new Error('No hay conexión con tu hoja. Revisa la URL o el internet.'); }
-  let j; try { j = await r.json(); } catch (e) { throw new Error('La respuesta no es válida. ¿La implementación está en "Cualquier persona"?'); }
+    txt = await r.text();
+  } catch (e) { throw new Error('No hay conexión con tu hoja. Revisa tu internet y que la URL esté completa.'); }
+  let j; try { j = JSON.parse(txt); } catch (e) { throw new Error(diagnose(txt, r.status)); }
   if (!j.ok) {
     if (j.code === 'AUTH' && action !== 'login') { logout(true, j.error); throw new Error(j.error); }
     throw new Error(j.error || 'Error desconocido');
@@ -859,9 +882,11 @@ function openSettings(){
     $('#sheet').innerHTML = `<header><div class="t"><b>Conexión</b><span>Se configura una sola vez en este navegador</span></div><button class="x" data-act="close" aria-label="Cerrar">×</button></header>
     <div class="body"><div class="sec"><h3>Tu hoja de Google</h3>
      <label class="f"><span>URL de la aplicación web (termina en /exec)</span><input id="c_url" value="${esc(S.cfg.url)}" ${PRESET.url ? 'readonly' : ''} placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off"></label>
-     ${PRESET.url ? '<div class="hint">Ya viene incluida en el archivo.</div>' : '<div class="btns"><button class="btn primary" id="c_save">Guardar</button></div>'}</div></div>`;
+     ${PRESET.url ? '<div class="hint">Ya viene incluida en el archivo.</div>' : '<div class="btns"><button class="btn primary" id="c_save">Guardar</button></div>'}
+     <div class="btns"><button class="btn" id="c_test">Probar conexión</button></div><div class="hint" id="c_tmsg" style="margin-top:8px"></div></div></div>`;
     if (!dlg.open) dlg.showModal();
-    const cs0 = $('#c_save'); if (cs0) cs0.onclick = () => { S.cfg.url = $('#c_url').value.trim(); store.set('pl_url', S.cfg.url); S.loginFocus = 0; closeModal(); toast('Conexión guardada. Ahora escribe la contraseña.'); };
+    const cs0 = $('#c_save'); if (cs0) cs0.onclick = () => { const u = cleanUrl($('#c_url').value); if (!u) { const m = $('#c_tmsg'); m.style.color = 'var(--danger)'; m.textContent = 'Esa no parece la URL de la aplicación web. Debe empezar con https://script.google.com/macros/s/ y terminar en /exec (no en /dev).'; return; } S.cfg.url = u; store.set('pl_url', u); S.loginFocus = 0; closeModal(); toast('Conexión guardada. Ahora escribe la contraseña.'); };
+    $('#c_test').onclick = () => { const u = PRESET.url || cleanUrl($('#c_url').value); if (!u) { const m = $('#c_tmsg'); m.style.color = 'var(--danger)'; m.textContent = 'Pega primero la URL completa (termina en /exec).'; return; } testConn(u, $('#c_tmsg')); };
     return;
   }
   $('#sheet').innerHTML = `<header><div class="t"><b>Configuración</b><span>Contraseña, conexión y mensaje al cliente</span></div><button class="x" data-act="close" aria-label="Cerrar">×</button></header>
@@ -875,7 +900,8 @@ function openSettings(){
    <div class="btns"><button class="btn primary" id="pw_save">Cambiar contraseña</button><button class="btn" data-act="logout">Cerrar sesión aquí</button></div>`}</div>
   <div class="sec"><h3>Conexión</h3>
    <label class="f"><span>URL de la aplicación web (termina en /exec)</span><input id="c_url" value="${esc(S.cfg.url)}" ${PRESET.url ? 'readonly' : ''} autocomplete="off"></label>
-   <div class="btns">${PRESET.url ? '' : '<button class="btn" id="c_save">Guardar URL</button>'}${S.demo ? '<button class="btn" id="c_demo">Salir de la demostración</button>' : '<button class="btn" id="c_demo">Modo demostración</button>'}</div>
+   <div class="btns">${PRESET.url ? '' : '<button class="btn" id="c_save">Guardar URL</button>'}<button class="btn" id="c_test">Probar conexión</button>${S.demo ? '<button class="btn" id="c_demo">Salir de la demostración</button>' : '<button class="btn" id="c_demo">Modo demostración</button>'}</div>
+   <div class="hint" id="c_tmsg" style="margin-top:8px"></div>
    <div class="hint" style="margin-top:8px">${S.ai === null ? '' : S.ai ? 'Lectura de capturas con IA: activa.' : 'Lectura con IA no configurada: se usa el lector básico.'}</div></div>
   <div class="sec"><h3>Mensaje de guía para el cliente</h3>
    <p class="hint" style="margin-top:0">Variables: {nombre} {producto} {transportadora} {guia} {valor} {tiempo} {ciudad}</p>
@@ -893,7 +919,8 @@ function openSettings(){
     try { const j = await api('changePassword', { oldPassword: o, newPassword: n }); S.cfg.token = j.token; store.set('pl_dev', j.token); S.defaultPw = false; closeModal(); toast('Contraseña cambiada. Los otros navegadores deberán entrar de nuevo.'); }
     catch (e) { m.textContent = e.message; pws.disabled = false; }
   };
-  const cs = $('#c_save'); if (cs) cs.onclick = () => { S.cfg.url = $('#c_url').value.trim(); store.set('pl_url', S.cfg.url); toast('URL guardada'); };
+  const cs = $('#c_save'); if (cs) cs.onclick = () => { const u = cleanUrl($('#c_url').value); if (!u) { const m = $('#c_tmsg'); m.style.color = 'var(--danger)'; m.textContent = 'Esa no parece la URL /exec de la aplicación web.'; return; } S.cfg.url = u; store.set('pl_url', u); toast('URL guardada'); };
+  $('#c_test').onclick = () => { const u = PRESET.url || cleanUrl($('#c_url').value) || S.cfg.url; testConn(u, $('#c_tmsg')); };
   $('#c_demo').onclick = () => { closeModal(); S.demo ? exitDemo() : startDemo(); };
   $('#c_tplsave').onclick = () => { store.set('pl_tpl', $('#c_tpl').value); toast('Mensaje guardado'); };
   $('#c_tplreset').onclick = () => { try { localStorage.removeItem('pl_tpl'); } catch (e) {} $('#c_tpl').value = DEFAULT_TPL; toast('Restaurado'); };
