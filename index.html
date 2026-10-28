@@ -76,7 +76,7 @@ label.f input,label.f select,label.f textarea{font-weight:400;color:var(--ink)}
 .btn svg{width:18px;height:18px}
 .btns{display:flex;flex-wrap:wrap;gap:8px;margin-top:10px}
 .btns .btn{flex:1 1 auto}
-.locked .tabs,.locked #fab,.locked #btnRefresh,.locked #btnSettings{display:none}
+.locked .tabs,.locked #fab,.locked #btnRefresh{display:none}
 .login{max-width:420px;margin:8vh auto 0}
 .fab{position:fixed;right:16px;bottom:max(16px,env(safe-area-inset-bottom));z-index:15;border-radius:999px;padding:0 20px;height:52px;box-shadow:0 8px 24px rgba(0,0,0,.28)}
 .kpis{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:10px}
@@ -328,20 +328,17 @@ function renderAll(){
 function loginHTML(){
   return `<div class="card form login"><h1>Entrar</h1><p class="sub">Escribe la contraseña para ver los pedidos.</p>
    <form id="lg_form" autocomplete="on">
-   ${PRESET.url ? '' : `<label class="f"><span>URL de la aplicación web (Apps Script, termina en /exec)</span><input id="lg_url" value="${esc(S.cfg.url)}" placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off"></label>`}
    <label class="f"><span>Contraseña</span><input id="lg_pw" type="password" autocomplete="current-password" required></label>
-   <div class="hint warn" id="lg_msg">${esc(S.loginMsg)}</div>
-   <button class="btn primary" style="width:100%" type="submit" id="lg_btn">Entrar</button></form>
-   ${S.cfg.url ? '' : '<div class="btns"><button class="btn ghost" data-act="demo">Ver modo demostración</button></div>'}</div>`;
+   <div class="hint warn" id="lg_msg">${esc(S.loginMsg)}${S.cfg.url ? '' : 'Primero configura la conexión una sola vez en ⚙ (arriba a la derecha).'}</div>
+   <button class="btn primary" style="width:100%" type="submit" id="lg_btn">Entrar</button></form></div>`;
 }
 function logout(silent, msg){
   S.cfg.token = ''; store.set('pl_dev', ''); S.data = null; S.loginFocus = 0; S.loginMsg = msg || ''; S.demo = false; $('#demoBar').hidden = true;
   if (dlg.open) dlg.close(); renderAll();
 }
 async function doLogin(){
-  const btn = $('#lg_btn'), msg = $('#lg_msg'), url = $('#lg_url');
-  if (url) { S.cfg.url = url.value.trim(); store.set('pl_url', S.cfg.url); }
-  if (!S.cfg.url) { msg.textContent = 'Falta la URL de tu aplicación web.'; return; }
+  const btn = $('#lg_btn'), msg = $('#lg_msg');
+  if (!S.cfg.url) { msg.textContent = 'Primero configura la conexión en ⚙ (una sola vez).'; return; }
   btn.disabled = true; msg.textContent = '';
   try {
     const j = await api('login', { password: $('#lg_pw').value });
@@ -794,6 +791,16 @@ $('#btnSettings').onclick = () => openSettings();
 
 /* ---------- configuración ---------- */
 function openSettings(){
+  const locked = !S.demo && !S.cfg.token;
+  if (locked) {
+    $('#sheet').innerHTML = `<header><div class="t"><b>Conexión</b><span>Se configura una sola vez en este navegador</span></div><button class="x" data-act="close" aria-label="Cerrar">×</button></header>
+    <div class="body"><div class="sec"><h3>Tu hoja de Google</h3>
+     <label class="f"><span>URL de la aplicación web (termina en /exec)</span><input id="c_url" value="${esc(S.cfg.url)}" ${PRESET.url ? 'readonly' : ''} placeholder="https://script.google.com/macros/s/…/exec" autocomplete="off"></label>
+     ${PRESET.url ? '<div class="hint">Ya viene incluida en el archivo.</div>' : '<div class="btns"><button class="btn primary" id="c_save">Guardar</button></div>'}</div></div>`;
+    if (!dlg.open) dlg.showModal();
+    const cs0 = $('#c_save'); if (cs0) cs0.onclick = () => { S.cfg.url = $('#c_url').value.trim(); store.set('pl_url', S.cfg.url); S.loginFocus = 0; closeModal(); toast('Conexión guardada. Ahora escribe la contraseña.'); };
+    return;
+  }
   $('#sheet').innerHTML = `<header><div class="t"><b>Configuración</b><span>Contraseña, conexión y mensaje al cliente</span></div><button class="x" data-act="close" aria-label="Cerrar">×</button></header>
   <div class="body"><div class="sec"><h3>Contraseña de acceso</h3>
    ${S.demo ? '<p class="hint">En modo demostración no hay contraseña.</p>' : `
@@ -805,7 +812,7 @@ function openSettings(){
    <div class="btns"><button class="btn primary" id="pw_save">Cambiar contraseña</button><button class="btn" data-act="logout">Cerrar sesión aquí</button></div>`}</div>
   <div class="sec"><h3>Conexión</h3>
    <label class="f"><span>URL de la aplicación web (termina en /exec)</span><input id="c_url" value="${esc(S.cfg.url)}" ${PRESET.url ? 'readonly' : ''} autocomplete="off"></label>
-   <div class="btns">${PRESET.url ? '' : '<button class="btn" id="c_save">Guardar URL</button>'}<button class="btn" id="c_demo">Modo demostración</button></div>
+   <div class="btns">${PRESET.url ? '' : '<button class="btn" id="c_save">Guardar URL</button>'}${S.demo ? '<button class="btn" id="c_demo">Salir de la demostración</button>' : '<button class="btn" id="c_demo">Modo demostración</button>'}</div>
    <div class="hint" style="margin-top:8px">${S.ai === null ? '' : S.ai ? 'Lectura de capturas con IA: activa.' : 'Lectura con IA no configurada: se usa el lector básico.'}</div></div>
   <div class="sec"><h3>Mensaje de guía para el cliente</h3>
    <p class="hint" style="margin-top:0">Variables: {nombre} {producto} {transportadora} {guia} {valor} {tiempo} {ciudad}</p>
@@ -824,7 +831,7 @@ function openSettings(){
     catch (e) { m.textContent = e.message; pws.disabled = false; }
   };
   const cs = $('#c_save'); if (cs) cs.onclick = () => { S.cfg.url = $('#c_url').value.trim(); store.set('pl_url', S.cfg.url); toast('URL guardada'); };
-  $('#c_demo').onclick = () => { closeModal(); startDemo(); };
+  $('#c_demo').onclick = () => { closeModal(); S.demo ? exitDemo() : startDemo(); };
   $('#c_tplsave').onclick = () => { store.set('pl_tpl', $('#c_tpl').value); toast('Mensaje guardado'); };
   $('#c_tplreset').onclick = () => { try { localStorage.removeItem('pl_tpl'); } catch (e) {} $('#c_tpl').value = DEFAULT_TPL; toast('Restaurado'); };
 }
@@ -882,7 +889,8 @@ const Demo = (() => {
     }, 120)); } };
 })();
 /*DEMO-END*/
-function startDemo(){ S.demo = true; S.data = null; $('#demoBar').hidden = false; closeModal(); renderAll(); load(); }
+function exitDemo(){ S.demo = false; S.data = null; $('#demoBar').hidden = true; closeModal(); renderAll(); if (S.cfg.token) load(); }
+function startDemo(){ if (!S.cfg.token) return; S.demo = true; S.data = null; $('#demoBar').hidden = false; closeModal(); renderAll(); load(); }
 
 /* ---------- arranque ---------- */
 renderAll();
